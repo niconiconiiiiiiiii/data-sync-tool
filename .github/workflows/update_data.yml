@@ -1,0 +1,33 @@
+name: Update PCR Data
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install requests brotli
+
+      - name: Run download_db
+        run: python download_db.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *_pcr_data.py
+          git diff --cached --quiet || git commit -m "auto: update pcr data $(date +%Y-%m-%d)"
+          git push
