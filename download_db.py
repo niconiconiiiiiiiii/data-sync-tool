@@ -91,9 +91,9 @@ def download_database(region):
 
 def get_where_clause(region):
     if region in ["jp", "tw"]:
-        return "(unit_id BETWEEN 100101 AND 169999) OR (unit_id BETWEEN 180101 AND 189999)"
+        return "(unit_id BETWEEN 100101 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
     if region == "cn":
-        return "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180101 AND 189999)"
+        return "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180001 AND 189901)"
     return "unit_id BETWEEN 100101 AND 189901"
 
 
@@ -161,7 +161,6 @@ def extract_unit_data(db_path, region):
 
         raw_units[unit_id] = {
             "unit_id": unit_id,
-            "battle_unit_id": battle_unit_id,
             "unit_name": name,
             "search_area_width": area_width,
             "unit_role_id": role,

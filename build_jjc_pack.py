@@ -11,9 +11,11 @@ from pathlib import Path
 
 import msgpack
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_OUTPUT_DIR = Path("dist")
 DEFAULT_RAW_DIR = Path("build/raw")
+
+PACK_ALLOWED_RANGES = ((1001, 1702), (1800, 1899))
 
 
 def normalize_alias(value):
@@ -40,6 +42,22 @@ def load_raw_units(path):
     return units, payload
 
 
+def normalize_unit_id(value):
+    value = int(value)
+    if value >= 100000:
+        return value // 100
+    return value
+
+
+def normalize_unit_id_set(values):
+    return {normalize_unit_id(value) for value in values}
+
+
+def is_pack_unit_id(unit_id):
+    unit_id = int(unit_id)
+    return any(start <= unit_id <= end for start, end in PACK_ALLOWED_RANGES)
+
+
 def load_region_data(py_path, raw_path=None):
     module = load_python_module(py_path)
     raw_units, raw_payload = load_raw_units(raw_path) if raw_path else ({}, None)
@@ -47,6 +65,7 @@ def load_region_data(py_path, raw_path=None):
     search_area_width = {int(k): v for k, v in getattr(module, "SEARCH_AREA_WIDTH", {}).items()}
     unit_role_id = {int(k): v for k, v in getattr(module, "UNIT_ROLE_ID", {}).items()}
     talent_id = {int(k): v for k, v in getattr(module, "TALENT_ID", {}).items()}
+    unavailable = normalize_unit_id_set(getattr(module, "UnavailableChara", set()))
 
     for unit_id, raw in raw_units.items():
         if raw.get("unit_name") is not None:
@@ -65,6 +84,7 @@ def load_region_data(py_path, raw_path=None):
         "search_area_width": search_area_width,
         "unit_role_id": unit_role_id,
         "talent_id": talent_id,
+        "unavailable": unavailable,
         "raw_units": raw_units,
     }
 
@@ -73,9 +93,11 @@ def load_nickname_data(path):
     module = load_python_module(path)
     chara_nickname = {int(k): v for k, v in getattr(module, "CHARA_NICKNAME", {}).items()}
     chara_name = {int(k): list(v) for k, v in getattr(module, "CHARA_NAME", {}).items()}
+    unavailable = normalize_unit_id_set(getattr(module, "UnavailableChara", set()))
     return {
         "display_nickname": chara_nickname,
         "aliases": chara_name,
+        "unavailable": unavailable,
     }
 
 
@@ -83,6 +105,14 @@ def first_present(unit_id, sources, key):
     for source_name, data in sources:
         value = data[key].get(unit_id)
         if value is not None:
+            return value, source_name
+    return None, "unknown"
+
+
+def first_present_nonzero(unit_id, sources, key):
+    for source_name, data in sources:
+        value = data[key].get(unit_id)
+        if value not in (None, 0):
             return value, source_name
     return None, "unknown"
 
@@ -112,51 +142,40 @@ def build_units(cn_data, jp_data, nickname_data):
     unit_ids.update(nickname_data["display_nickname"].keys())
     unit_ids.update(nickname_data["aliases"].keys())
 
+    unavailable = cn_data["unavailable"] | jp_data["unavailable"] | nickname_data["unavailable"]
+    unit_ids = {unit_id for unit_id in unit_ids if is_pack_unit_id(unit_id) and unit_id not in unavailable}
+
     units = {}
     for unit_id in sorted(unit_ids):
-        cn_unit_name = cn_data["unit_name"].get(unit_id)
-        jp_unit_name = jp_data["unit_name"].get(unit_id)
         display_nickname = nickname_data["display_nickname"].get(unit_id)
         if display_nickname is None:
             alias_list = nickname_data["aliases"].get(unit_id, [])
-            display_nickname = alias_list[0] if alias_list else (cn_unit_name or jp_unit_name or str(unit_id))
+            display_nickname = alias_list[0] if alias_list else str(unit_id)
 
-        search_area_width, search_source = first_present(unit_id, [("cn", cn_data), ("jp", jp_data)], "search_area_width")
-        role_id, role_source = first_present(unit_id, [("cn", cn_data), ("jp", jp_data)], "unit_role_id")
-        talent_id, talent_source = first_present(unit_id, [("cn", cn_data), ("jp", jp_data)], "talent_id")
-
-        alias_values = unique_strings(
-            [display_nickname, cn_unit_name, jp_unit_name]
-            + nickname_data["aliases"].get(unit_id, [])
-        )
+        search_area_width, _ = first_present_nonzero(unit_id, [("cn", cn_data), ("jp", jp_data)], "search_area_width")
+        role_id, _ = first_present(unit_id, [("cn", cn_data), ("jp", jp_data)], "unit_role_id")
+        talent_id, _ = first_present(unit_id, [("cn", cn_data), ("jp", jp_data)], "talent_id")
 
         units[str(unit_id)] = {
             "unit_id": unit_id,
-            "battle_unit_id": unit_id * 100 + 1,
             "display_nickname": display_nickname,
-            "cn_unit_name": cn_unit_name,
-            "jp_unit_name": jp_unit_name,
-            "aliases": alias_values,
             "search_area_width": search_area_width,
             "unit_role_id": role_id,
             "talent_id": talent_id,
-            "field_sources": {
-                "cn_unit_name": "cn" if cn_unit_name is not None else "unknown",
-                "jp_unit_name": "jp" if jp_unit_name is not None else "unknown",
-                "search_area_width": search_source,
-                "unit_role_id": role_source,
-                "talent_id": talent_source,
-            },
         }
     return units
 
 
-def build_alias_index(units):
+def build_alias_index(units, nickname_data):
     alias_index = {}
     conflicts = []
     for unit_key in sorted(units.keys(), key=lambda value: int(value)):
         unit_id = int(unit_key)
-        for alias in units[unit_key]["aliases"]:
+        aliases = unique_strings(
+            [units[unit_key]["display_nickname"]]
+            + nickname_data["aliases"].get(unit_id, [])
+        )
+        for alias in aliases:
             normalized = normalize_alias(alias)
             if not normalized:
                 continue
@@ -222,7 +241,7 @@ def build_pack(
     generated_at = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     units = build_units(cn_data, jp_data, nickname_data)
-    alias_index, conflicts = build_alias_index(units)
+    alias_index, conflicts = build_alias_index(units, nickname_data)
     pack_version = f"cn-{cn_data['truth_version']}-nick-{nickname_revision}"
 
     units_payload = {"schema_version": SCHEMA_VERSION, "units": units}
