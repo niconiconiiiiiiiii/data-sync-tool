@@ -49,6 +49,48 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+      - name: Publish latest JJC pack release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PACK="dist/jjc-pack-latest.zip"
+          NOTES="dist/release-notes.md"
+
+          python - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+
+          pack = Path("dist/jjc-pack-latest.zip")
+          with zipfile.ZipFile(pack) as zf:
+              manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+
+          counts = manifest["counts"]
+          sources = manifest["sources"]
+          notes = f"""Automated JJC data pack release.
+
+          - Pack version: `{manifest["pack_version"]}`
+          - Generated at: `{manifest["generated_at"]}`
+          - Units: `{counts["units"]}`
+          - Aliases: `{counts["aliases"]}`
+          - Alias conflicts: `{counts["alias_conflicts"]}`
+          - CN DB: `{sources["cn"]["truth_version"]}` / `{sources["cn"]["db_hash"]}`
+          - JP DB: `{sources["jp"]["truth_version"]}` / `{sources["jp"]["db_hash"]}`
+          - Nickname source: `{sources["nickname"]["revision"]}`
+          """
+          Path("dist/release-notes.md").write_text(notes, encoding="utf-8")
+          PY
+
+          git tag -f jjc-pack-latest "$GITHUB_SHA"
+          git push --force origin refs/tags/jjc-pack-latest
+
+          if gh release view jjc-pack-latest >/dev/null 2>&1; then
+            gh release upload jjc-pack-latest "$PACK" --clobber
+            gh release edit jjc-pack-latest --title "JJC Data Pack Latest" --notes-file "$NOTES" --latest --target "$GITHUB_SHA"
+          else
+            gh release create jjc-pack-latest "$PACK" --title "JJC Data Pack Latest" --notes-file "$NOTES" --latest --target "$GITHUB_SHA"
+          fi
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
