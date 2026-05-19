@@ -1,0 +1,21 @@
+# Python cache/test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local downloaded game databases
+cn/
+jp/
+tw/
+*.db
+*.db.br
+
+# Build outputs
+build/
+dist/
+
+# Local IDE/agent workspace
+.trae/
+
+# Downloaded nickname source used during pack build
+_pcr_data.py

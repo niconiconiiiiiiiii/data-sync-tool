@@ -1,0 +1,4 @@
+requests
+brotli
+msgpack
+pytest

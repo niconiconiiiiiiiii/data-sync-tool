@@ -22,10 +22,29 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: pip install requests brotli
+        run: pip install -r requirements.txt
+
+      - name: Fetch nickname source
+        run: |
+          NICKNAME_SHA=$(git ls-remote https://github.com/cc004/autopcr.git refs/heads/main | awk '{print $1}')
+          curl -fsSL "https://raw.githubusercontent.com/cc004/autopcr/${NICKNAME_SHA}/autopcr/util/pcr_data.py" -o _pcr_data.py
+          echo "NICKNAME_REVISION=${NICKNAME_SHA:0:12}" >> "$GITHUB_ENV"
 
       - name: Run download_db
         run: python download_db.py
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build JJC pack
+        run: python build_jjc_pack.py --nickname _pcr_data.py --nickname-revision "$NICKNAME_REVISION"
+
+      - name: Upload JJC pack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jjc-pack
+          path: dist/*.zip
+          if-no-files-found: error
 
       - name: Commit and push if changed
         run: |

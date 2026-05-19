@@ -1,17 +1,24 @@
-import urllib.request
-import os
+import json
 import re
 import sqlite3
+import urllib.request
+from pathlib import Path
+
 import brotli
 import requests
 
+REGIONS = ["jp", "cn", "tw"]
+RAW_OUTPUT_DIR = Path("build/raw")
+
+
 def load_local_version(region):
-    filename = f"{region.upper()}_pcr_data.py"
-    if not os.path.exists(filename):
+    filename = Path(f"{region.upper()}_pcr_data.py")
+    if not filename.exists():
         return None
+
     version = None
     db_hash = None
-    with open(filename, 'r', encoding='utf-8') as f:
+    with filename.open("r", encoding="utf-8") as f:
         for line in f:
             m = re.match(r'^TRUTH_VERSION\s*=\s*"(.+)"', line)
             if m:
@@ -19,9 +26,11 @@ def load_local_version(region):
             m = re.match(r'^DB_HASH\s*=\s*"(.+)"', line)
             if m:
                 db_hash = m.group(1)
+
     if version and db_hash:
-        return {'truthVersion': version, 'hash': db_hash}
+        return {"truthVersion": version, "hash": db_hash}
     return None
+
 
 def check_db_version(region):
     url = "https://wthee.xyz/pcr/api/v1/db/info/v2"
@@ -31,99 +40,109 @@ def check_db_version(region):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"  获取 {region.upper()} 版本信息失败: {e}")
+        print(f"  Failed to fetch {region.upper()} version info: {e}")
         return None
 
+
 def get_db_path(region):
-    return os.path.join(region, f"redive_{region}.db")
+    return Path(region) / f"redive_{region}.db"
+
 
 def check_update(region):
     remote_info = check_db_version(region)
     if not remote_info or remote_info.get("status") != 0:
         return False, None, None
 
-    remote_version = remote_info['data']['truthVersion']
-    remote_hash = remote_info['data']['hash']
+    remote_version = remote_info["data"]["truthVersion"]
+    remote_hash = remote_info["data"]["hash"]
 
     local_info = load_local_version(region)
     if local_info is None:
         return True, remote_version, remote_hash
 
-    local_version = local_info.get('truthVersion')
-    local_hash = local_info.get('hash')
-
-    if local_version != remote_version or local_hash != remote_hash:
+    if local_info.get("truthVersion") != remote_version or local_info.get("hash") != remote_hash:
         return True, remote_version, remote_hash
 
     return False, remote_version, remote_hash
 
+
 def download_database(region):
     db_url = f"https://wthee.xyz/db/redive_{region}.db.br"
     db_path = get_db_path(region)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    temp_path = db_path + ".br"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = db_path.with_suffix(db_path.suffix + ".br")
 
     try:
-        print(f"  正在下载: {db_url}")
+        print(f"  Downloading: {db_url}")
         urllib.request.urlretrieve(db_url, temp_path)
-        print(f"  下载完成，正在解压...")
+        print("  Download complete, decompressing...")
 
-        with open(temp_path, 'rb') as f:
-            decompressed_data = brotli.decompress(f.read())
-        with open(db_path, 'wb') as f:
-            f.write(decompressed_data)
-        os.remove(temp_path)
-        print(f"  解压完成: {db_path}")
-        return db_path
+        decompressed_data = brotli.decompress(temp_path.read_bytes())
+        db_path.write_bytes(decompressed_data)
+        temp_path.unlink(missing_ok=True)
+        print(f"  Decompressed to: {db_path}")
+        return str(db_path)
 
     except Exception as e:
-        print(f"  下载失败: {e}")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        print(f"  Download failed: {e}")
+        temp_path.unlink(missing_ok=True)
         return None
+
+
+def get_where_clause(region):
+    if region in ["jp", "tw"]:
+        return "(unit_id BETWEEN 100101 AND 169999) OR (unit_id BETWEEN 180101 AND 189999)"
+    if region == "cn":
+        return "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180101 AND 189999)"
+    return "unit_id BETWEEN 100101 AND 189901"
+
+
+def ensure_database_available(region, has_update):
+    db_path = get_db_path(region)
+    if has_update or not db_path.exists():
+        if not has_update:
+            print(f"  {region.upper()}: local database is missing; downloading for JJC raw JSON")
+        return download_database(region)
+    return str(db_path)
+
 
 def extract_unit_data(db_path, region):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    where_clause = get_where_clause(region)
 
-    # 根据地区设置不同的提取范围
-    if region in ['jp', 'tw']:
-        # JP, TW: 100101-169999, 180101-189999
-        where_clause = "(unit_id BETWEEN 100101 AND 169999) OR (unit_id BETWEEN 180101 AND 189999)"
-    elif region == 'cn':
-        # CN: 100101-170201, 180101-189999
-        where_clause = "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180101 AND 189999)"
-    else:
-        # 默认: 100101-189901
-        where_clause = "unit_id BETWEEN 100101 AND 189901"
-
-    query1 = f"""
+    cursor.execute(
+        f"""
         SELECT unit_id, unit_name, search_area_width
         FROM unit_data
         WHERE {where_clause}
         ORDER BY unit_id
-    """
-    cursor.execute(query1)
-    unit_data = {row[0]: {'unit_name': row[1], 'search_area_width': row[2]} for row in cursor.fetchall()}
+        """
+    )
+    unit_data = {
+        row[0]: {"unit_name": row[1], "search_area_width": row[2]}
+        for row in cursor.fetchall()
+    }
 
-    query2 = f"""
+    cursor.execute(
+        f"""
         SELECT unit_id, unit_role_id
         FROM unit_role_data
         WHERE {where_clause}
         ORDER BY unit_id
-    """
-    cursor.execute(query2)
+        """
+    )
     role_data = {row[0]: row[1] for row in cursor.fetchall()}
 
-    query3 = f"""
+    cursor.execute(
+        f"""
         SELECT unit_id, talent_id
         FROM unit_talent
         WHERE {where_clause}
         ORDER BY unit_id
-    """
-    cursor.execute(query3)
+        """
+    )
     talent_data = {row[0]: row[1] for row in cursor.fetchall()}
-
     conn.close()
 
     unavailable = {}
@@ -131,110 +150,144 @@ def extract_unit_data(db_path, region):
     search_area_width = {}
     unit_role_id = {}
     talent_id = {}
+    raw_units = {}
 
-    for uid in sorted(unit_data.keys()):
-        converted_id = uid // 100
-        role = role_data.get(uid)
-        talent = talent_data.get(uid)
-        name = unit_data[uid]['unit_name']
+    for battle_unit_id in sorted(unit_data.keys()):
+        unit_id = battle_unit_id // 100
+        role = role_data.get(battle_unit_id)
+        talent = talent_data.get(battle_unit_id)
+        name = unit_data[battle_unit_id]["unit_name"]
+        area_width = unit_data[battle_unit_id]["search_area_width"]
+
+        raw_units[unit_id] = {
+            "unit_id": unit_id,
+            "battle_unit_id": battle_unit_id,
+            "unit_name": name,
+            "search_area_width": area_width,
+            "unit_role_id": role,
+            "talent_id": talent,
+        }
 
         if role is None or talent is None:
-            unavailable[converted_id] = name
+            unavailable[unit_id] = name
         else:
-            unit_name[converted_id] = name
-            search_area_width[converted_id] = unit_data[uid]['search_area_width']
-            unit_role_id[converted_id] = role
-            talent_id[converted_id] = talent
+            unit_name[unit_id] = name
+            search_area_width[unit_id] = area_width
+            unit_role_id[unit_id] = role
+            talent_id[unit_id] = talent
 
     return {
-        'unavailable': unavailable,
-        'unit_name': unit_name,
-        'search_area_width': search_area_width,
-        'unit_role_id': unit_role_id,
-        'talent_id': talent_id
+        "unavailable": unavailable,
+        "unit_name": unit_name,
+        "search_area_width": search_area_width,
+        "unit_role_id": unit_role_id,
+        "talent_id": talent_id,
+        "raw_units": raw_units,
     }
 
+
 def save_to_py(data, region, version, db_hash):
-    filename = f"{region.upper()}_pcr_data.py"
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write("'''公主连接Re:dive的游戏数据'''\n\n")
+    filename = Path(f"{region.upper()}_pcr_data.py")
+    with filename.open("w", encoding="utf-8", newline="\n") as f:
+        f.write('"""Princess Connect Re:Dive game data. Generated by download_db.py."""\n\n')
         f.write(f'TRUTH_VERSION = "{version}"\n')
         f.write(f'DB_HASH = "{db_hash}"\n\n')
 
         f.write("UnavailableChara = {\n")
-        for uid in sorted(data['unavailable'].keys()):
-            name = data['unavailable'][uid]
-            f.write(f"    {uid},   # {name}\n")
+        for unit_id in sorted(data["unavailable"].keys()):
+            name = data["unavailable"][unit_id]
+            f.write(f"    {unit_id},   # {name}\n")
         f.write("}\n\n")
 
         f.write("UNIT_NAME = {\n")
-        for uid in sorted(data['unit_name'].keys()):
-            f.write(f"    {uid}: \"{data['unit_name'][uid]}\",\n")
+        for unit_id in sorted(data["unit_name"].keys()):
+            f.write(f"    {unit_id}: {data['unit_name'][unit_id]!r},\n")
         f.write("}\n\n")
 
         f.write("SEARCH_AREA_WIDTH = {\n")
-        for uid in sorted(data['search_area_width'].keys()):
-            f.write(f"    {uid}: {data['search_area_width'][uid]},\n")
+        for unit_id in sorted(data["search_area_width"].keys()):
+            f.write(f"    {unit_id}: {data['search_area_width'][unit_id]},\n")
         f.write("}\n\n")
 
         f.write("UNIT_ROLE_ID = {\n")
-        for uid in sorted(data['unit_role_id'].keys()):
-            f.write(f"    {uid}: {data['unit_role_id'][uid]},\n")
+        for unit_id in sorted(data["unit_role_id"].keys()):
+            f.write(f"    {unit_id}: {data['unit_role_id'][unit_id]},\n")
         f.write("}\n\n")
 
         f.write("TALENT_ID = {\n")
-        for uid in sorted(data['talent_id'].keys()):
-            f.write(f"    {uid}: {data['talent_id'][uid]},\n")
+        for unit_id in sorted(data["talent_id"].keys()):
+            f.write(f"    {unit_id}: {data['talent_id'][unit_id]},\n")
         f.write("}\n")
 
-    print(f"  数据已保存到 {filename}")
-    print(f"  - 有效角色: {len(data['unit_name'])} 个")
-    print(f"  - 不可用角色: {len(data['unavailable'])} 个")
+    print(f"  Saved data to {filename}")
+    print(f"  - complete units: {len(data['unit_name'])}")
+    print(f"  - partial units: {len(data['unavailable'])}")
     return filename
+
+
+def save_raw_json(data, region, version, db_hash, output_dir=RAW_OUTPUT_DIR):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{region}_units.json"
+    payload = {
+        "region": region,
+        "truth_version": version,
+        "db_hash": db_hash,
+        "units": [data["raw_units"][unit_id] for unit_id in sorted(data["raw_units"].keys())],
+    }
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"  Saved raw JSON to {output_path}")
+    return output_path
+
 
 def main():
     print("=" * 60)
-    print("PCR 数据库版本检测、下载与数据提取工具")
+    print("PCR database version check, download, and extraction tool")
     print("=" * 60)
 
-    regions = ['jp', 'cn', 'tw']
-
-    print("\n[步骤1] 检查版本更新...")
+    print("\n[Step 1] Checking versions...")
     update_info = {}
 
-    for region in regions:
+    for region in REGIONS:
         has_update, remote_version, remote_hash = check_update(region)
         update_info[region] = {
-            'has_update': has_update,
-            'version': remote_version,
-            'hash': remote_hash
+            "has_update": has_update,
+            "version": remote_version,
+            "hash": remote_hash,
         }
         if has_update:
-            print(f"  {region.upper()}: 检测到更新 -> {remote_version}")
+            print(f"  {region.upper()}: update available -> {remote_version}")
         elif remote_version:
-            print(f"  {region.upper()}: 已是最新版本 -> {remote_version}")
+            print(f"  {region.upper()}: already latest -> {remote_version}")
         else:
-            print(f"  {region.upper()}: 版本检查失败")
+            print(f"  {region.upper()}: version check failed")
 
-    print("\n[步骤2] 下载/更新数据库...")
+    print("\n[Step 2] Downloading/updating databases and extracting data...")
 
-    for region in regions:
+    for region in REGIONS:
         info = update_info[region]
-        if info['has_update']:
-            print(f"\n  >>> {region.upper()} 需要更新:")
-            db_path = download_database(region)
-            if db_path:
-                data = extract_unit_data(db_path, region)
-                save_to_py(data, region, info['version'], info['hash'])
+        if not info["version"]:
+            print(f"  {region.upper()}: skipped because version check failed")
+            continue
+
+        if info["has_update"]:
+            print(f"\n  >>> {region.upper()} needs update")
+
+        db_path = ensure_database_available(region, info["has_update"])
+        if not db_path:
+            continue
+
+        data = extract_unit_data(db_path, region)
+        if info["has_update"]:
+            save_to_py(data, region, info["version"], info["hash"])
         else:
-            if info['version']:
-                print(f"  {region.upper()}: 已是最新，跳过")
-            else:
-                print(f"  {region.upper()}: 跳过（版本检查失败）")
+            print(f"  {region.upper()}: already latest; skipped Python data file write")
+        save_raw_json(data, region, info["version"], info["hash"])
 
     print("\n" + "=" * 60)
-    print("处理完成！")
+    print("Done.")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
