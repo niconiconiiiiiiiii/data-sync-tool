@@ -91,10 +91,10 @@ def download_database(region):
 
 def get_where_clause(region):
     if region in ["jp", "tw"]:
-        return "(unit_id BETWEEN 100101 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
+        return "(unit_id BETWEEN 100001 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
     if region == "cn":
-        return "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180001 AND 189901)"
-    return "unit_id BETWEEN 100101 AND 189901"
+        return "(unit_id BETWEEN 100001 AND 170201) OR (unit_id BETWEEN 180001 AND 189901)"
+    return "unit_id BETWEEN 100001 AND 189901"
 
 
 def ensure_database_available(region, has_update):
@@ -152,12 +152,11 @@ def extract_unit_data(db_path, region):
     talent_id = {}
     raw_units = {}
 
-    for battle_unit_id in sorted(unit_data.keys()):
-        unit_id = battle_unit_id // 100
-        role = role_data.get(battle_unit_id)
-        talent = talent_data.get(battle_unit_id)
-        name = unit_data[battle_unit_id]["unit_name"]
-        area_width = unit_data[battle_unit_id]["search_area_width"]
+    for unit_id in sorted(unit_data.keys()):
+        role = role_data.get(unit_id)
+        talent = talent_data.get(unit_id)
+        name = unit_data[unit_id]["unit_name"]
+        area_width = unit_data[unit_id]["search_area_width"]
 
         raw_units[unit_id] = {
             "unit_id": unit_id,

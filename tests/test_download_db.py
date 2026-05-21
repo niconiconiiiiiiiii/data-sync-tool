@@ -4,13 +4,13 @@ import sqlite3
 from download_db import extract_unit_data, get_where_clause, save_raw_json
 
 
-def test_get_where_clause_uses_jjc_v2_unit_ranges():
-    assert get_where_clause("cn") == "(unit_id BETWEEN 100101 AND 170201) OR (unit_id BETWEEN 180001 AND 189901)"
-    assert get_where_clause("jp") == "(unit_id BETWEEN 100101 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
-    assert get_where_clause("tw") == "(unit_id BETWEEN 100101 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
+def test_get_where_clause_uses_jjc_v3_6_digit_unit_ranges():
+    assert get_where_clause("cn") == "(unit_id BETWEEN 100001 AND 170201) OR (unit_id BETWEEN 180001 AND 189901)"
+    assert get_where_clause("jp") == "(unit_id BETWEEN 100001 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
+    assert get_where_clause("tw") == "(unit_id BETWEEN 100001 AND 169901) OR (unit_id BETWEEN 180001 AND 189901)"
 
 
-def test_extract_unit_data_keeps_partial_units_in_raw_units_without_battle_unit_id(tmp_path):
+def test_extract_unit_data_keeps_6_digit_unit_ids_in_raw_units(tmp_path):
     db_path = tmp_path / "redive_cn.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(
@@ -39,17 +39,17 @@ def test_extract_unit_data_keeps_partial_units_in_raw_units_without_battle_unit_
 
     data = extract_unit_data(str(db_path), "cn")
 
-    assert data["unit_name"] == {1001: "\u65e5\u548c\u8389"}
-    assert data["unavailable"] == {1002: "\u4f18\u8863"}
-    assert data["raw_units"][1001] == {
-        "unit_id": 1001,
+    assert data["unit_name"] == {100101: "\u65e5\u548c\u8389"}
+    assert data["unavailable"] == {100201: "\u4f18\u8863"}
+    assert data["raw_units"][100101] == {
+        "unit_id": 100101,
         "unit_name": "\u65e5\u548c\u8389",
         "search_area_width": 200,
         "unit_role_id": 1,
         "talent_id": 1,
     }
-    assert data["raw_units"][1002] == {
-        "unit_id": 1002,
+    assert data["raw_units"][100201] == {
+        "unit_id": 100201,
         "unit_name": "\u4f18\u8863",
         "search_area_width": 800,
         "unit_role_id": None,
@@ -60,8 +60,8 @@ def test_extract_unit_data_keeps_partial_units_in_raw_units_without_battle_unit_
 def test_save_raw_json_writes_region_metadata_and_all_raw_units(tmp_path):
     data = {
         "raw_units": {
-            1002: {
-                "unit_id": 1002,
+            100201: {
+                "unit_id": 100201,
                 "unit_name": "\u4f18\u8863",
                 "search_area_width": 800,
                 "unit_role_id": None,
@@ -78,7 +78,7 @@ def test_save_raw_json_writes_region_metadata_and_all_raw_units(tmp_path):
     assert payload["db_hash"] == "hash-1"
     assert payload["units"] == [
         {
-            "unit_id": 1002,
+            "unit_id": 100201,
             "unit_name": "\u4f18\u8863",
             "search_area_width": 800,
             "unit_role_id": None,

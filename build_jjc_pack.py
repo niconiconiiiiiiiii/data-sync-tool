@@ -11,11 +11,11 @@ from pathlib import Path
 
 import msgpack
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_OUTPUT_DIR = Path("dist")
 DEFAULT_RAW_DIR = Path("build/raw")
 
-PACK_ALLOWED_RANGES = ((1001, 1702), (1800, 1899))
+PACK_ALLOWED_RANGES = ((100001, 170201), (180001, 189901))
 
 
 def normalize_alias(value):
@@ -42,32 +42,52 @@ def load_raw_units(path):
     return units, payload
 
 
-def normalize_unit_id(value):
+def to_battle_unit_id(value):
     value = int(value)
-    if value >= 100000:
-        return value // 100
-    return value
+    return value if value >= 100000 else value * 100 + 1
+
+
+def base_unit_id(value):
+    value = int(value)
+    return value // 100 if value >= 100000 else value
 
 
 def normalize_unit_id_set(values):
-    return {normalize_unit_id(value) for value in values}
+    return {to_battle_unit_id(value) for value in values}
 
 
 def is_pack_unit_id(unit_id):
-    unit_id = int(unit_id)
+    unit_id = to_battle_unit_id(unit_id)
     return any(start <= unit_id <= end for start, end in PACK_ALLOWED_RANGES)
+
+
+def normalize_mapping_keys(mapping):
+    normalized = {}
+    for key, value in mapping.items():
+        normalized[to_battle_unit_id(key)] = value
+    return normalized
+
+
+def normalize_alias_mapping(mapping):
+    normalized = {}
+    for key, values in mapping.items():
+        unit_id = to_battle_unit_id(key)
+        normalized.setdefault(unit_id, [])
+        normalized[unit_id].extend(list(values))
+    return normalized
 
 
 def load_region_data(py_path, raw_path=None):
     module = load_python_module(py_path)
     raw_units, raw_payload = load_raw_units(raw_path) if raw_path else ({}, None)
-    unit_name = {int(k): v for k, v in getattr(module, "UNIT_NAME", {}).items()}
-    search_area_width = {int(k): v for k, v in getattr(module, "SEARCH_AREA_WIDTH", {}).items()}
-    unit_role_id = {int(k): v for k, v in getattr(module, "UNIT_ROLE_ID", {}).items()}
-    talent_id = {int(k): v for k, v in getattr(module, "TALENT_ID", {}).items()}
+    unit_name = normalize_mapping_keys(getattr(module, "UNIT_NAME", {}))
+    search_area_width = normalize_mapping_keys(getattr(module, "SEARCH_AREA_WIDTH", {}))
+    unit_role_id = normalize_mapping_keys(getattr(module, "UNIT_ROLE_ID", {}))
+    talent_id = normalize_mapping_keys(getattr(module, "TALENT_ID", {}))
     unavailable = normalize_unit_id_set(getattr(module, "UnavailableChara", set()))
 
-    for unit_id, raw in raw_units.items():
+    for raw_unit_id, raw in raw_units.items():
+        unit_id = to_battle_unit_id(raw_unit_id)
         if raw.get("unit_name") is not None:
             unit_name.setdefault(unit_id, raw.get("unit_name"))
         if raw.get("search_area_width") is not None:
@@ -91,8 +111,8 @@ def load_region_data(py_path, raw_path=None):
 
 def load_nickname_data(path):
     module = load_python_module(path)
-    chara_nickname = {int(k): v for k, v in getattr(module, "CHARA_NICKNAME", {}).items()}
-    chara_name = {int(k): list(v) for k, v in getattr(module, "CHARA_NAME", {}).items()}
+    chara_nickname = normalize_mapping_keys(getattr(module, "CHARA_NICKNAME", {}))
+    chara_name = normalize_alias_mapping(getattr(module, "CHARA_NAME", {}))
     unavailable = normalize_unit_id_set(getattr(module, "UnavailableChara", set()))
     return {
         "display_nickname": chara_nickname,
@@ -141,6 +161,7 @@ def build_units(cn_data, jp_data, nickname_data):
             unit_ids.update(data[key].keys())
     unit_ids.update(nickname_data["display_nickname"].keys())
     unit_ids.update(nickname_data["aliases"].keys())
+    unit_ids = {to_battle_unit_id(unit_id) for unit_id in unit_ids}
 
     unavailable = cn_data["unavailable"] | jp_data["unavailable"] | nickname_data["unavailable"]
     unit_ids = {unit_id for unit_id in unit_ids if is_pack_unit_id(unit_id) and unit_id not in unavailable}
@@ -158,6 +179,7 @@ def build_units(cn_data, jp_data, nickname_data):
 
         units[str(unit_id)] = {
             "unit_id": unit_id,
+            "base_unit_id": base_unit_id(unit_id),
             "display_nickname": display_nickname,
             "search_area_width": search_area_width,
             "unit_role_id": role_id,
