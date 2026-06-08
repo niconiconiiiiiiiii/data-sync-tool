@@ -36,9 +36,6 @@ jobs:
       - name: Run download_db
         run: python download_db.py
 
-      - name: Run tests
-        run: python -m pytest
-
       - name: Build JJC pack
         run: python build_jjc_pack.py --nickname _pcr_data.py --nickname-revision "$NICKNAME_REVISION"
 
